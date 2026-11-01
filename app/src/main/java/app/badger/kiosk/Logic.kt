@@ -76,6 +76,10 @@ object TapRules {
         return "\"" + safe.replace("\"", "\"\"") + "\""
     }
 
+    /** Generates rich Excel spreadsheet (.xlsx) with event banner and formatted attendance records. */
+    fun buildXlsx(event: EventEntity, rows: List<AttendanceRow>): ByteArray =
+        XlsxExporter.build(event, rows)
+
     /** Same column names for every event; `checkOutAt` is appended only for entry/exit events. */
     fun buildCsv(event: EventEntity, rows: List<AttendanceRow>): String {
         val f = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
@@ -91,3 +95,4 @@ object TapRules {
         }
     }
 }
+

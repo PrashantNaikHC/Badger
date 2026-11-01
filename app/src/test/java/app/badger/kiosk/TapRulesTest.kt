@@ -50,6 +50,71 @@ class TapRulesTest {
         assertTrue(one.contains("\"'=Bad\""))
     }
 
+    private fun unzip(bytes: ByteArray): Map<String, String> {
+        val files = mutableMapOf<String, String>()
+        val zis = java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes))
+        var entry = zis.nextEntry
+        while (entry != null) {
+            files[entry.name] = zis.bufferedReader(java.nio.charset.StandardCharsets.UTF_8).readText()
+            entry = zis.nextEntry
+        }
+        return files
+    }
+
+    @Test fun xlsxGeneratesValidOpenXmlZipStructure() {
+        val rows = listOf(
+            AttendanceRow("U1", "Alice & Bob <Dev>", 1700000000000L, 1700003600000L),
+            AttendanceRow("U2", "Charlie \"VIP\"", 1700001000000L, null)
+        )
+        val bytes = TapRules.buildXlsx(ev, rows)
+        assertTrue("XLSX output should not be empty", bytes.isNotEmpty())
+
+        val files = unzip(bytes)
+        assertTrue(files.containsKey("[Content_Types].xml"))
+        assertTrue(files.containsKey("_rels/.rels"))
+        assertTrue(files.containsKey("xl/_rels/workbook.xml.rels"))
+        assertTrue(files.containsKey("xl/workbook.xml"))
+        assertTrue(files.containsKey("xl/styles.xml"))
+        assertTrue(files.containsKey("xl/worksheets/sheet1.xml"))
+
+        val sheet = files["xl/worksheets/sheet1.xml"]!!
+        // Check Event Banner and title
+        assertTrue(sheet.contains(ev.title))
+        assertTrue(sheet.contains("Entry / Exit"))
+        assertTrue(sheet.contains("TOTAL ATTENDEES"))
+        assertTrue(sheet.contains("CURRENTLY INSIDE"))
+        assertTrue(sheet.contains("COMPLETED / EXITED"))
+
+        // Check XML escaping
+        assertTrue(sheet.contains("Alice &amp; Bob &lt;Dev&gt;"))
+        assertTrue(sheet.contains("Charlie &quot;VIP&quot;"))
+
+        // Check Status and Duration
+        assertTrue(sheet.contains("1h 0m"))
+        assertTrue(sheet.contains("Exited"))
+        assertTrue(sheet.contains("Inside"))
+
+        // Check autoFilter on entry/exit
+        assertTrue(sheet.contains("""<autoFilter ref="A7:E9"/>"""))
+    }
+
+    @Test fun xlsxOneTimeEventStructure() {
+        val oneTimeEv = ev.copy(type = EventType.ONE_TIME, title = "Annual Meet")
+        val rows = listOf(AttendanceRow("U1", "Dana", 1700000000000L, null))
+        val bytes = TapRules.buildXlsx(oneTimeEv, rows)
+        val files = unzip(bytes)
+        val sheet = files["xl/worksheets/sheet1.xml"]!!
+
+        assertTrue(sheet.contains("Annual Meet"))
+        assertTrue(sheet.contains("One-Time"))
+        assertTrue(sheet.contains("TOTAL ATTENDEES"))
+        assertFalse(sheet.contains("CURRENTLY INSIDE"))
+        assertTrue(sheet.contains("Employee Name"))
+        assertTrue(sheet.contains("Check-in Time"))
+        assertFalse(sheet.contains("Check-out Time"))
+        assertTrue(sheet.contains("""<autoFilter ref="A7:B8"/>"""))
+    }
+
     @Test fun nameExtractorUsesConfiguredAnchors() {
         // Multi-line: Name between "EMPLOYEE" and "ID"
         val lines1 = listOf(

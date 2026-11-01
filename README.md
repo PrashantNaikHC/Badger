@@ -38,10 +38,10 @@ The first time an unknown card is tapped, Badger automatically activates the cam
 - **Public Kiosk Lock & Admin NFC Cards**
   - Exiting the public scanner screen is protected by **Device Screen Lock** (PIN, pattern, or biometric) or by tapping a designated **Admin NFC Card**.
   - Survives app restarts by automatically resuming the active scanner session.
-- **Privacy-First & Offline by Design**
-  - Requires **no `INTERNET` permission**. All data lives locally in an on-device Room SQLite database (`badger.db`).
-  - Raw NFC hardware UIDs are never displayed in the UI or included in CSV exports.
-  - CSV exports sanitize leading formula characters (`=`, `+`, `-`, `@`) to prevent spreadsheet formula injection.
+- **Rich Excel (.xlsx) Export**
+  - Exports styled spreadsheets featuring an event summary banner, real-time KPI metric blocks (Total Attendees, Currently Inside, Completed/Exited), duration calculations, status pills, and Excel auto-filtering.
+  - Zero third-party dependencies—generates native OpenXML (.xlsx) on-device with zero APK bloat.
+  - Raw NFC hardware UIDs are sensitive and intentionally excluded from exports.
 
 ---
 
@@ -51,9 +51,10 @@ Package namespace: `app.badger.kiosk`
 
 | File | Responsibility |
 | :--- | :--- |
-| [`MainActivity.kt`](app/src/main/java/app/badger/kiosk/MainActivity.kt) | NFC foreground `ReaderCallback`, device credential authentication, CSV document export, and root navigation host. |
+| [`MainActivity.kt`](app/src/main/java/app/badger/kiosk/MainActivity.kt) | NFC foreground `ReaderCallback`, device credential authentication, Excel (.xlsx) document export, and root navigation host. |
 | [`AppViewModel.kt`](app/src/main/java/app/badger/kiosk/AppViewModel.kt) | State management for events, scanner state machine (`Idle`, `Registering`, `Result`), audio/haptic feedback, and admin card enrollment. |
-| [`Logic.kt`](app/src/main/java/app/badger/kiosk/Logic.kt) | Pure decision engine (`TapRules`) for entry/exit tap validation, event templates, and CSV generation. |
+| [`Logic.kt`](app/src/main/java/app/badger/kiosk/Logic.kt) | Pure decision engine (`TapRules`) for entry/exit tap validation and event templates. |
+| [`XlsxExporter.kt`](app/src/main/java/app/badger/kiosk/XlsxExporter.kt) | Zero-dependency OpenXML (.xlsx) builder generating styled spreadsheets with KPI cards and attendee tables. |
 | [`Data.kt`](app/src/main/java/app/badger/kiosk/Data.kt) | Room database schema (`EmployeeEntity`, `EventEntity`, `AttendanceEntity`, `AdminCardEntity`) and DAO queries. |
 | [`NameExtractor.kt`](app/src/main/java/app/badger/kiosk/NameExtractor.kt) | Parses OCR text tokens from the ID badge layout into a normalized full name. |
 | [`Screens.kt`](app/src/main/java/app/badger/kiosk/Screens.kt) | Jetpack Compose screens for Active/Past Events, Device Data & Governance, Event Creation, Event Details, and the Public Scanner. |
@@ -103,7 +104,7 @@ Every organization formats its employee ID badges differently (different layouts
 ## App Icon & Branding
 
 The project logo is available at:
-- [`assets/badger-logo.png`](assets/badger-logo.png) (and [`badger-logo.png`](badger-logo.png) in the project root)
+- [`assets/badger-logo.png`](assets/badger-logo.png)
 
 To set it as the launcher icon in Android Studio:
 1. Right-click `app/src/main/res` → **New** → **Image Asset**.

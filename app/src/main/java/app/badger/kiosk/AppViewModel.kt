@@ -168,6 +168,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    suspend fun buildXlsx(eventId: Long): ByteArray = withContext(Dispatchers.IO) {
+        val e = dao.getEvent(eventId) ?: return@withContext ByteArray(0)
+        TapRules.buildXlsx(e, dao.getAttendance(eventId))
+    }
+
     suspend fun buildCsv(eventId: Long): String = withContext(Dispatchers.IO) {
         val e = dao.getEvent(eventId) ?: return@withContext ""
         TapRules.buildCsv(e, dao.getAttendance(eventId))

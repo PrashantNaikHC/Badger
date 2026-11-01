@@ -644,7 +644,7 @@ fun EventDetailScreen(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     SectionLabel("Entries (${rows.size})")
                     Spacer(Modifier.weight(1f))
-                    TextButton(onExport) { Text("Export CSV") }
+                    TextButton(onExport) { Text("Export Excel") }
                 }
             }
             if (rows.isEmpty()) item {

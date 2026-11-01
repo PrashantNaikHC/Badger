@@ -37,14 +37,14 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     private var exportEventId: Long = -1
     private var pendingAuthAction: (() -> Unit)? = null
 
-    private val csvLauncher = registerForActivityResult(
-        ActivityResultContracts.CreateDocument("text/csv")
+    private val exportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     ) { uri ->
         uri ?: return@registerForActivityResult
         lifecycleScope.launch {
-            val csv = vm.buildCsv(exportEventId)
-            contentResolver.openOutputStream(uri)?.use { it.write(csv.toByteArray()) }
-            android.widget.Toast.makeText(this@MainActivity, "Exported", android.widget.Toast.LENGTH_SHORT).show()
+            val xlsx = vm.buildXlsx(exportEventId)
+            contentResolver.openOutputStream(uri)?.use { it.write(xlsx) }
+            android.widget.Toast.makeText(this@MainActivity, "Exported Excel file", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         exportEventId = event.id
         val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
         val safe = event.title.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').ifEmpty { "event" }
-        csvLauncher.launch("${safe}_$stamp.csv")
+        exportLauncher.launch("${safe}_$stamp.xlsx")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
