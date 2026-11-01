@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/badger-logo.png" alt="Badger Logo" width="180" />
+  <img src="assets/badger-logo.png?v=2" alt="Badger Logo" width="180" />
 </p>
 
 <h1 align="center">Badger</h1>
