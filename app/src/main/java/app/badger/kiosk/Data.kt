@@ -30,6 +30,9 @@ data class IdCardTemplateEntity(
     val name: String,
     val leftAnchor: String? = null,
     val rightAnchor: String? = null,
+    val isPortrait: Boolean = true,
+    val relativeYMin: Float? = null,
+    val relativeYMax: Float? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -49,7 +52,12 @@ data class EventEntity(
     val msgExitSuccess: String,
     val msgAlreadyExited: String,
     val msgNoEntry: String,
-    val msgNotRegistered: String
+    val msgNotRegistered: String,
+    // Location lock (geofence) configuration
+    val locationLockEnabled: Boolean = false,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val radiusMeters: Float? = null
 ) {
     val hasExit get() = type == EventType.ENTRY_EXIT
 }
@@ -182,7 +190,7 @@ interface AppDao {
         AdminCardEntity::class,
         IdCardTemplateEntity::class
     ],
-    version = 4,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -190,11 +198,21 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): AppDao
 
     companion object {
+        private val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE events ADD COLUMN locationLockEnabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE events ADD COLUMN latitude REAL")
+                db.execSQL("ALTER TABLE events ADD COLUMN longitude REAL")
+                db.execSQL("ALTER TABLE events ADD COLUMN radiusMeters REAL")
+            }
+        }
+
         @Volatile private var instance: AppDatabase? = null
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, AppDatabase::class.java, "badger.db"
-            ).fallbackToDestructiveMigration()
+            ).addMigrations(MIGRATION_5_6)
+                .fallbackToDestructiveMigration()
                 .build().also { instance = it }
         }
     }

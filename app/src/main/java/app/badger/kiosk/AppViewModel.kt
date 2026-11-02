@@ -49,6 +49,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _enrollingAdminCard = MutableStateFlow(false)
     val enrollingAdminCard: StateFlow<Boolean> = _enrollingAdminCard
 
+    private val _locationState = MutableStateFlow(DeviceLocationState())
+    val locationState: StateFlow<DeviceLocationState> = _locationState
+
     val activeEvents = dao.observeEvents(EventStatus.ACTIVE)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val pastEvents = dao.observeEvents(EventStatus.ENDED)
@@ -75,6 +78,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    fun updateLocationState(state: DeviceLocationState) {
+        _locationState.value = state
+        val r = _route.value as? Route.Scanner ?: return
+        if (_scan.value is ScanState.Registering) {
+            viewModelScope.launch {
+                val ev = dao.getEvent(r.eventId) ?: return@launch
+                if (!isEventAllowed(ev)) {
+                    resetNow()
+                }
+            }
+        }
+    }
+
+    fun isEventAllowed(event: EventEntity): Boolean =
+        TapRules.evaluateGeofence(event, _locationState.value).isAllowed
 
     fun event(id: Long): Flow<EventEntity?> = dao.observeEvent(id)
     fun attendance(id: Long): Flow<List<AttendanceRow>> = dao.observeAttendance(id)
@@ -140,8 +159,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun removeEmployee(uid: String) = viewModelScope.launch { dao.deleteEmployee(uid) }
 
     // ---- templates ----
-    fun createTemplate(name: String, leftAnchor: String?, rightAnchor: String?) = viewModelScope.launch {
-        dao.insertTemplate(IdCardTemplateEntity(name = name, leftAnchor = leftAnchor, rightAnchor = rightAnchor))
+    fun createTemplate(
+        name: String,
+        leftAnchor: String?,
+        rightAnchor: String?,
+        isPortrait: Boolean = true,
+        relativeYMin: Float? = null,
+        relativeYMax: Float? = null
+    ) = viewModelScope.launch {
+        dao.insertTemplate(
+            IdCardTemplateEntity(
+                name = name,
+                leftAnchor = leftAnchor,
+                rightAnchor = rightAnchor,
+                isPortrait = isPortrait,
+                relativeYMin = relativeYMin,
+                relativeYMax = relativeYMax
+            )
+        )
         _route.value = Route.Home
     }
 
@@ -157,24 +192,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun endEvent(id: Long) = viewModelScope.launch { dao.setStatus(id, EventStatus.ENDED, System.currentTimeMillis()) }
-    fun reopenEvent(id: Long) = viewModelScope.launch { dao.setStatus(id, EventStatus.ACTIVE, null) }
+    fun endEvent(id: Long) = viewModelScope.launch {
+        val ev = dao.getEvent(id) ?: return@launch
+        if (!isEventAllowed(ev)) return@launch
+        dao.setStatus(id, EventStatus.ENDED, System.currentTimeMillis())
+    }
 
-    /** Entry removal is only allowed while the event is active. */
+    fun reopenEvent(id: Long) = viewModelScope.launch {
+        val ev = dao.getEvent(id) ?: return@launch
+        if (!isEventAllowed(ev)) return@launch
+        dao.setStatus(id, EventStatus.ACTIVE, null)
+    }
+
+    /** Entry removal is only allowed while the event is active and within its geofence. */
     fun removeEntries(eventId: Long, uids: Collection<String>) {
         viewModelScope.launch {
-            if (dao.getEvent(eventId)?.status != EventStatus.ACTIVE) return@launch
+            val ev = dao.getEvent(eventId) ?: return@launch
+            if (ev.status != EventStatus.ACTIVE || !isEventAllowed(ev)) return@launch
             dao.deleteAttendance(eventId, uids.toList())
         }
     }
 
     suspend fun buildXlsx(eventId: Long): ByteArray = withContext(Dispatchers.IO) {
         val e = dao.getEvent(eventId) ?: return@withContext ByteArray(0)
+        if (!isEventAllowed(e)) return@withContext ByteArray(0)
         TapRules.buildXlsx(e, dao.getAttendance(eventId))
     }
 
     suspend fun buildCsv(eventId: Long): String = withContext(Dispatchers.IO) {
         val e = dao.getEvent(eventId) ?: return@withContext ""
+        if (!isEventAllowed(e)) return@withContext ""
         TapRules.buildCsv(e, dao.getAttendance(eventId))
     }
 
@@ -213,6 +260,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (_scan.value != ScanState.Idle) return@withLock
                 val event = dao.getEvent(r.eventId) ?: return@withLock
                 if (event.status != EventStatus.ACTIVE) return@withLock
+                if (!isEventAllowed(event)) return@withLock
                 val outcome = TapRules.decide(
                     event, r.mode, uid, dao.findEmployee(uid), dao.findAttendance(event.id, uid), System.currentTimeMillis()
                 )
@@ -239,6 +287,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             mutex.withLock {
                 if (_scan.value != s) return@withLock
                 val event = dao.getEvent(r.eventId) ?: return@withLock
+                if (!isEventAllowed(event)) return@withLock
                 val existing = dao.findEmployee(s.uid)
                 val wasStandaloneAdmin = dao.isAdminUid(s.uid)
                 val emp = EmployeeEntity(s.uid, name, System.currentTimeMillis(), isAdmin = existing?.isAdmin == true || wasStandaloneAdmin)

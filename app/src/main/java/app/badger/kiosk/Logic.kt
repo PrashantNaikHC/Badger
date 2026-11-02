@@ -3,8 +3,42 @@ package app.badger.kiosk
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.*
 
 enum class ScanMode { ENTRY, EXIT }
+
+/** Current device location snapshot used to evaluate event geofences. */
+data class DeviceLocationState(
+    val hasPermission: Boolean = false,
+    val isLocationEnabled: Boolean = false,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val isMock: Boolean = false
+)
+
+/** Result of evaluating an event's geofence lock against the device's current location. */
+enum class GeofenceStatus {
+    NOT_LOCKED,
+    INSIDE,
+    OUTSIDE_BOUNDS,
+    MOCK_DETECTED,
+    PERMISSION_REQUIRED,
+    LOCATION_DISABLED,
+    ACQUIRING;
+
+    val isAllowed: Boolean
+        get() = this == NOT_LOCKED || this == INSIDE
+
+    val alertTitle: String
+        get() = when (this) {
+            NOT_LOCKED, INSIDE -> ""
+            MOCK_DETECTED -> "Mock location detected"
+            OUTSIDE_BOUNDS -> "Outside the bounds of event"
+            PERMISSION_REQUIRED -> "Outside the bounds of event (Location permission required)"
+            LOCATION_DISABLED -> "Outside the bounds of event (Location services off)"
+            ACQUIRING -> "Outside the bounds of event (Verifying location…)"
+        }
+}
 
 /** Predefined starting points; every message stays editable when creating an event. */
 enum class EventTemplate(
@@ -38,8 +72,40 @@ sealed interface TapOutcome {
 }
 
 object TapRules {
+    val GEOFENCE_RADIUS_OPTIONS = listOf(50f, 100f, 250f, 500f)
+    const val DEFAULT_GEOFENCE_RADIUS_M = 100f
+    private const val EARTH_RADIUS_M = 6371000.0
+
     private val timeFmt get() = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
     fun fmt(t: Long?): String = t?.let { timeFmt.format(Date(it)) } ?: ""
+
+    /** Great-circle Haversine distance in meters between two WGS84 coordinates. */
+    fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val rLat1 = Math.toRadians(lat1)
+        val rLat2 = Math.toRadians(lat2)
+        val a = sin(dLat / 2).pow(2) + cos(rLat1) * cos(rLat2) * sin(dLon / 2).pow(2)
+        val c = 2 * atan2(sqrt(a), sqrt((1.0 - a).coerceAtLeast(0.0)))
+        return EARTH_RADIUS_M * c
+    }
+
+    /** Evaluates whether the device is currently allowed to access a location-locked event. */
+    fun evaluateGeofence(event: EventEntity, location: DeviceLocationState): GeofenceStatus {
+        if (!event.locationLockEnabled) return GeofenceStatus.NOT_LOCKED
+        val targetLat = event.latitude ?: return GeofenceStatus.NOT_LOCKED
+        val targetLon = event.longitude ?: return GeofenceStatus.NOT_LOCKED
+        val radius = event.radiusMeters ?: DEFAULT_GEOFENCE_RADIUS_M
+
+        if (!location.hasPermission) return GeofenceStatus.PERMISSION_REQUIRED
+        if (!location.isLocationEnabled) return GeofenceStatus.LOCATION_DISABLED
+        if (location.isMock) return GeofenceStatus.MOCK_DETECTED
+        val curLat = location.latitude ?: return GeofenceStatus.ACQUIRING
+        val curLon = location.longitude ?: return GeofenceStatus.ACQUIRING
+
+        val distance = distanceMeters(targetLat, targetLon, curLat, curLon)
+        return if (distance <= radius) GeofenceStatus.INSIDE else GeofenceStatus.OUTSIDE_BOUNDS
+    }
 
     /** Pure decision for one tap; [employee] and [existing] come from the database. */
     fun decide(

@@ -38,6 +38,10 @@ fun HomeScreen(
     employees: List<EmployeeEntity>, adminCards: List<AdminCardEntity>,
     templates: List<IdCardTemplateEntity>,
     enrollingAdminCard: Boolean, nfcAvailable: Boolean,
+    locationState: DeviceLocationState,
+    onRequestLocationPermission: () -> Unit,
+    onOpenLocationSettings: () -> Unit,
+    onNavigateToEvent: (EventEntity) -> Unit,
     onOpen: (Long) -> Unit, onCreate: () -> Unit,
     onCreateTemplate: () -> Unit,
     onDeleteTemplate: (Long) -> Unit,
@@ -65,7 +69,7 @@ fun HomeScreen(
         floatingActionButton = {
             if (tab == 0) ExtendedFloatingActionButton(
                 onClick = onCreate, containerColor = Ink, contentColor = Color.White,
-                icon = { Icon(Icons.Default.Add, null) }, text = { Text("New event") }
+                icon = { Icon(Icons.Default.Add, null) }, text = { Text("Event") }
             )
         }
     ) { pad ->
@@ -278,7 +282,7 @@ fun HomeScreen(
             if (list.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) {
                     Text(
-                        if (tab == 0) "No active events.\nTap “New event” to start one." else "Ended events appear here.",
+                        if (tab == 0) "No active events.\nTap “+ Event” to start one." else "Ended events appear here.",
                         color = Muted, textAlign = TextAlign.Center
                     )
                 }
@@ -286,7 +290,16 @@ fun HomeScreen(
                 Modifier.fillMaxSize().padding(pad),
                 contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(list, key = { it.event.id }) { EventCard(it) { onOpen(it.event.id) } }
+                items(list, key = { it.event.id }) { row ->
+                    EventCard(
+                        row = row,
+                        locationState = locationState,
+                        onRequestLocationPermission = onRequestLocationPermission,
+                        onOpenLocationSettings = onOpenLocationSettings,
+                        onNavigate = { onNavigateToEvent(row.event) },
+                        onClick = { onOpen(row.event.id) }
+                    )
+                }
             }
         }
     }
@@ -348,21 +361,122 @@ fun HomeScreen(
 }
 
 @Composable
-private fun EventCard(row: EventWithCounts, onClick: () -> Unit) {
+private fun EventCard(
+    row: EventWithCounts,
+    locationState: DeviceLocationState,
+    onRequestLocationPermission: () -> Unit,
+    onOpenLocationSettings: () -> Unit,
+    onNavigate: () -> Unit,
+    onClick: () -> Unit
+) {
     val e = row.event
+    val geofenceStatus = TapRules.evaluateGeofence(e, locationState)
+    val allowed = geofenceStatus.isAllowed
+
     Card(
-        onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        onClick = { if (allowed) onClick() },
+        enabled = allowed,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White,
+            disabledContainerColor = Color(0xFFF3F4F6)
+        )
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(e.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    e.title,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (allowed) Color.Unspecified else Muted,
+                    modifier = Modifier.weight(1f)
+                )
+                if (e.locationLockEnabled) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        color = if (allowed) Color(0xFFE8EAF6) else Color(0xFFFDECEA),
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = "Location Locked",
+                            tint = if (allowed) Ink else ErrorRed,
+                            modifier = Modifier.padding(6.dp).size(16.dp)
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Text(if (e.hasExit) "Entry & exit" else "One-time check-in", color = Muted, fontSize = 13.sp)
             Spacer(Modifier.height(12.dp))
             val counts = if (e.hasExit) "${row.checkedIn} checked in · ${row.exited} exited" else "${row.checkedIn} checked in"
-            Text(counts, color = Ink, fontWeight = FontWeight.Medium)
+            Text(counts, color = if (allowed) Ink else Muted, fontWeight = FontWeight.Medium)
             if (e.status == EventStatus.ENDED)
                 Text("Ended ${TapRules.fmt(e.endedAt)}", color = Muted, fontSize = 12.sp)
+
+            if (!allowed) {
+                Spacer(Modifier.height(12.dp))
+                Surface(
+                    color = Color(0xFFFDECEA),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = ErrorRed,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = geofenceStatus.alertTitle,
+                            color = ErrorRed,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (geofenceStatus == GeofenceStatus.PERMISSION_REQUIRED) {
+                            Spacer(Modifier.width(8.dp))
+                            TextButton(
+                                onClick = onRequestLocationPermission,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("Grant", fontSize = 12.sp, color = ErrorRed, fontWeight = FontWeight.Bold)
+                            }
+                        } else if (geofenceStatus == GeofenceStatus.LOCATION_DISABLED) {
+                            Spacer(Modifier.width(8.dp))
+                            TextButton(
+                                onClick = onOpenLocationSettings,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("Enable GPS", fontSize = 12.sp, color = ErrorRed, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+                if (e.latitude != null && e.longitude != null) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onNavigate,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Place, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Navigate to event location")
+                    }
+                }
+            }
         }
     }
 }
@@ -373,6 +487,10 @@ private fun EventCard(row: EventWithCounts, onClick: () -> Unit) {
 @Composable
 fun CreateEventScreen(
     templates: List<IdCardTemplateEntity>,
+    locationState: DeviceLocationState,
+    onRequestLocationPermission: () -> Unit,
+    onOpenLocationSettings: () -> Unit,
+    onRefreshLocation: () -> Unit,
     onBack: () -> Unit,
     onCreateTemplate: () -> Unit,
     onCreate: (EventEntity) -> Unit
@@ -382,6 +500,11 @@ fun CreateEventScreen(
     var selectedTemplateId by rememberSaveable { mutableStateOf(templates.firstOrNull()?.id) }
     var templateDropdownExpanded by remember { mutableStateOf(false) }
     var entryExit by rememberSaveable { mutableStateOf(EventTemplate.GIFT.entryExit) }
+    var locationLockEnabled by rememberSaveable { mutableStateOf(false) }
+    var selectedRadius by rememberSaveable { mutableFloatStateOf(TapRules.DEFAULT_GEOFENCE_RADIUS_M) }
+    var capturedLat by rememberSaveable { mutableStateOf<Double?>(null) }
+    var capturedLon by rememberSaveable { mutableStateOf<Double?>(null) }
+
     var idle by rememberSaveable { mutableStateOf(EventTemplate.IDLE) }
     var success by rememberSaveable { mutableStateOf(EventTemplate.GIFT.success) }
     var already by rememberSaveable { mutableStateOf(EventTemplate.GIFT.already) }
@@ -389,6 +512,24 @@ fun CreateEventScreen(
     var alreadyExited by rememberSaveable { mutableStateOf(EventTemplate.ALREADY_EXITED) }
     var noEntry by rememberSaveable { mutableStateOf(EventTemplate.NO_ENTRY) }
     var notRegistered by rememberSaveable { mutableStateOf(EventTemplate.NOT_REGISTERED) }
+
+    // Automatically capture current GPS coordinates when Location Lock is enabled and a valid location arrives
+    LaunchedEffect(locationLockEnabled, locationState) {
+        if (!locationLockEnabled) {
+            capturedLat = null
+            capturedLon = null
+        } else if (
+            locationState.hasPermission &&
+            locationState.isLocationEnabled &&
+            !locationState.isMock &&
+            locationState.latitude != null &&
+            locationState.longitude != null &&
+            (capturedLat == null || capturedLon == null)
+        ) {
+            capturedLat = locationState.latitude
+            capturedLon = locationState.longitude
+        }
+    }
 
     fun apply(t: EventTemplate) {
         template = t
@@ -398,8 +539,17 @@ fun CreateEventScreen(
         already = t.already
     }
 
+    val locationReady = !locationLockEnabled || (
+        locationState.hasPermission &&
+            locationState.isLocationEnabled &&
+            !locationState.isMock &&
+            capturedLat != null &&
+            capturedLon != null
+        )
+
     val valid = title.isNotBlank() && idle.isNotBlank() && success.isNotBlank() && already.isNotBlank() &&
-        (!entryExit || (exitSuccess.isNotBlank() && alreadyExited.isNotBlank() && noEntry.isNotBlank() && notRegistered.isNotBlank()))
+        (!entryExit || (exitSuccess.isNotBlank() && alreadyExited.isNotBlank() && noEntry.isNotBlank() && notRegistered.isNotBlank())) &&
+        locationReady
 
     Scaffold(
         containerColor = IdleBg,
@@ -421,7 +571,11 @@ fun CreateEventScreen(
                                 createdAt = System.currentTimeMillis(),
                                 msgIdle = idle.trim(), msgSuccess = success.trim(), msgAlready = already.trim(),
                                 msgExitSuccess = exitSuccess.trim(), msgAlreadyExited = alreadyExited.trim(),
-                                msgNoEntry = noEntry.trim(), msgNotRegistered = notRegistered.trim()
+                                msgNoEntry = noEntry.trim(), msgNotRegistered = notRegistered.trim(),
+                                locationLockEnabled = locationLockEnabled,
+                                latitude = if (locationLockEnabled) capturedLat else null,
+                                longitude = if (locationLockEnabled) capturedLon else null,
+                                radiusMeters = if (locationLockEnabled) selectedRadius else null
                             )
                         )
                     },
@@ -511,6 +665,134 @@ fun CreateEventScreen(
                     )
                 }
             }
+
+            fun toggleLocationLock(enabled: Boolean) {
+                locationLockEnabled = enabled
+                if (enabled) {
+                    if (!locationState.hasPermission) {
+                        onRequestLocationPermission()
+                    } else {
+                        onRefreshLocation()
+                        if (locationState.isLocationEnabled && !locationState.isMock && locationState.latitude != null && locationState.longitude != null) {
+                            capturedLat = locationState.latitude
+                            capturedLon = locationState.longitude
+                        }
+                    }
+                } else {
+                    capturedLat = null
+                    capturedLon = null
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { toggleLocationLock(!locationLockEnabled) },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(locationLockEnabled, { toggleLocationLock(it) })
+                Column {
+                    Text("Enable Location Lock", fontWeight = FontWeight.Medium)
+                    Text(
+                        "Restrict scanning, export, and event access to this geofence",
+                        color = Muted, fontSize = 12.sp
+                    )
+                }
+            }
+
+            if (locationLockEnabled) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Geofence Radius", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TapRules.GEOFENCE_RADIUS_OPTIONS.forEach { radius ->
+                                FilterChip(
+                                    selected = selectedRadius == radius,
+                                    onClick = { selectedRadius = radius },
+                                    label = { Text("${radius.toInt()}m") }
+                                )
+                            }
+                        }
+
+                        when {
+                            !locationState.hasPermission -> {
+                                Surface(color = Color(0xFFFDECEA), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Warning, null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Location permission is required to lock this event.", color = ErrorRed, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = onRequestLocationPermission) {
+                                            Text("Grant", color = ErrorRed, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                            !locationState.isLocationEnabled -> {
+                                Surface(color = Color(0xFFFDECEA), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Warning, null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Location services are turned off on this device.", color = ErrorRed, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = onOpenLocationSettings) {
+                                            Text("Enable GPS", color = ErrorRed, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                            locationState.isMock -> {
+                                Surface(color = Color(0xFFFDECEA), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Warning, null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Mock location detected. Disable fake GPS apps to lock this event.", color = ErrorRed, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                            capturedLat == null || capturedLon == null -> {
+                                Surface(color = Color(0xFFFFF3E0), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.LocationOn, null, tint = Ink, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Acquiring current device location…", color = Ink, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = onRefreshLocation) {
+                                            Text("Retry", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                            else -> {
+                                Surface(color = Color(0xFFE8EAF6), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.LocationOn, null, tint = Ink, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            "Current location locked (${selectedRadius.toInt()}m radius)",
+                                            color = Ink,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(
+                                            onClick = {
+                                                onRefreshLocation()
+                                                if (locationState.latitude != null && locationState.longitude != null && !locationState.isMock) {
+                                                    capturedLat = locationState.latitude
+                                                    capturedLon = locationState.longitude
+                                                }
+                                            }
+                                        ) {
+                                            Text("Recapture", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             SectionLabel("Messages shown on the scanner")
             Field("Idle prompt", idle) { idle = it }
             Field(if (entryExit) "Entry success" else "Success", success) { success = it }
@@ -545,16 +827,30 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit) =
 @Composable
 fun EventDetailScreen(
     event: EventEntity?, rows: List<AttendanceRow>,
+    locationState: DeviceLocationState,
+    onRequestLocationPermission: () -> Unit,
+    onOpenLocationSettings: () -> Unit,
     onBack: () -> Unit, onScan: (ScanMode) -> Unit, onExport: () -> Unit,
     onEnd: () -> Unit, onReopen: () -> Unit, onRemove: (Set<String>) -> Unit
 ) {
     if (event == null) { Box(Modifier.fillMaxSize()) ; return }
     val active = event.status == EventStatus.ACTIVE
+    val geofenceStatus = TapRules.evaluateGeofence(event, locationState)
+    val allowed = geofenceStatus.isAllowed
+
     var selected by remember { mutableStateOf(setOf<String>()) }
     var sheetFor by remember { mutableStateOf<AttendanceRow?>(null) }
     var confirmRemove by remember { mutableStateOf<Set<String>?>(null) }
     var confirmEnd by remember { mutableStateOf(false) }
     val selecting = selected.isNotEmpty()
+
+    LaunchedEffect(allowed) {
+        if (!allowed) {
+            selected = emptySet()
+            confirmRemove = null
+            confirmEnd = false
+        }
+    }
 
     BackHandler(selecting) { selected = emptySet() }
 
@@ -564,14 +860,69 @@ fun EventDetailScreen(
             if (selecting) TopAppBar(
                 title = { Text("${selected.size} selected") },
                 navigationIcon = { IconButton({ selected = emptySet() }) { Icon(Icons.Default.Close, "Clear selection") } },
-                actions = { IconButton({ confirmRemove = selected }) { Icon(Icons.Default.Delete, "Remove selected") } }
+                actions = {
+                    IconButton({ if (allowed) confirmRemove = selected }, enabled = allowed) {
+                        Icon(Icons.Default.Delete, "Remove selected")
+                    }
+                }
             ) else TopAppBar(
-                title = { Text(event.title, maxLines = 1) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(event.title, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                        if (event.locationLockEnabled) {
+                            Spacer(Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.LocationOn,
+                                contentDescription = "Location Locked",
+                                tint = if (allowed) Ink else ErrorRed,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                },
                 navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }
             )
         }
     ) { pad ->
         LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!allowed) {
+                item {
+                    Surface(
+                        color = Color(0xFFFDECEA),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = geofenceStatus.alertTitle,
+                                    color = ErrorRed,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (geofenceStatus == GeofenceStatus.PERMISSION_REQUIRED) {
+                                    TextButton(onClick = onRequestLocationPermission) {
+                                        Text("Grant", color = ErrorRed, fontWeight = FontWeight.Bold)
+                                    }
+                                } else if (geofenceStatus == GeofenceStatus.LOCATION_DISABLED) {
+                                    TextButton(onClick = onOpenLocationSettings) {
+                                        Text("Enable GPS", color = ErrorRed, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Scanning, export, and event actions are disabled until this device is inside the event bounds.",
+                                color = ErrorRed,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -588,17 +939,26 @@ fun EventDetailScreen(
                         if (active) {
                             Spacer(Modifier.height(16.dp))
                             if (event.hasExit) {
-                                Button({ onScan(ScanMode.ENTRY) }, Modifier.fillMaxWidth().height(48.dp)) {
+                                Button(
+                                    onClick = { onScan(ScanMode.ENTRY) },
+                                    enabled = allowed,
+                                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                                ) {
                                     Text("Start entry scanner")
                                 }
                                 Spacer(Modifier.height(8.dp))
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton({ onScan(ScanMode.EXIT) }, Modifier.weight(1f).height(48.dp)) {
+                                    OutlinedButton(
+                                        onClick = { onScan(ScanMode.EXIT) },
+                                        enabled = allowed,
+                                        modifier = Modifier.weight(1f).height(48.dp)
+                                    ) {
                                         Text("Start exit scanner")
                                     }
                                     OutlinedButton(
-                                        { confirmEnd = true },
-                                        Modifier.height(48.dp),
+                                        onClick = { confirmEnd = true },
+                                        enabled = allowed,
+                                        modifier = Modifier.height(48.dp),
                                         colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed)
                                     ) {
                                         Text("End event")
@@ -606,12 +966,17 @@ fun EventDetailScreen(
                                 }
                             } else {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button({ onScan(ScanMode.ENTRY) }, Modifier.weight(1f).height(48.dp)) {
+                                    Button(
+                                        onClick = { onScan(ScanMode.ENTRY) },
+                                        enabled = allowed,
+                                        modifier = Modifier.weight(1f).height(48.dp)
+                                    ) {
                                         Text("Start scanner")
                                     }
                                     OutlinedButton(
-                                        { confirmEnd = true },
-                                        Modifier.height(48.dp),
+                                        onClick = { confirmEnd = true },
+                                        enabled = allowed,
+                                        modifier = Modifier.height(48.dp),
                                         colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed)
                                     ) {
                                         Text("End event")
@@ -632,7 +997,11 @@ fun EventDetailScreen(
                                     modifier = Modifier.weight(1f)
                                 )
                                 Spacer(Modifier.width(8.dp))
-                                OutlinedButton(onReopen, Modifier.height(40.dp)) {
+                                OutlinedButton(
+                                    onClick = onReopen,
+                                    enabled = allowed,
+                                    modifier = Modifier.height(40.dp)
+                                ) {
                                     Text("Reopen event")
                                 }
                             }
@@ -644,7 +1013,7 @@ fun EventDetailScreen(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     SectionLabel("Entries (${rows.size})")
                     Spacer(Modifier.weight(1f))
-                    TextButton(onExport) { Text("Export Excel") }
+                    TextButton(onClick = onExport, enabled = allowed) { Text("Export Excel") }
                 }
             }
             if (rows.isEmpty()) item {
@@ -656,8 +1025,8 @@ fun EventDetailScreen(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = if (isSel) Color(0xFFE8EAF6) else Color.White),
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).combinedClickable(
-                        onClick = { if (selecting) selected = selected.toggle(r.nfcUid) else sheetFor = r },
-                        onLongClick = { if (active) selected = selected.toggle(r.nfcUid) }
+                        onClick = { if (selecting && allowed) selected = selected.toggle(r.nfcUid) else sheetFor = r },
+                        onLongClick = { if (active && allowed) selected = selected.toggle(r.nfcUid) }
                     )
                 ) {
                     Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -687,8 +1056,9 @@ fun EventDetailScreen(
                 if (event.hasExit) DetailLine("Checked out", r.checkOutAt?.let { TapRules.fmt(it) } ?: "Not yet")
                 Spacer(Modifier.height(16.dp))
                 if (active) OutlinedButton(
-                    { confirmRemove = setOf(r.nfcUid); sheetFor = null },
-                    Modifier.fillMaxWidth(),
+                    onClick = { confirmRemove = setOf(r.nfcUid); sheetFor = null },
+                    enabled = allowed,
+                    modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed)
                 ) { Text("Remove entry") }
                 else Text("Ended events are read-only.", color = Muted, fontSize = 13.sp)
@@ -702,7 +1072,7 @@ fun EventDetailScreen(
             title = { Text(if (uids.size == 1) "Remove entry?" else "Remove ${uids.size} entries?") },
             text = { Text("The person stays registered and can tap again for this event.") },
             confirmButton = {
-                TextButton({ onRemove(uids); selected = emptySet(); confirmRemove = null }) { Text("Remove", color = ErrorRed) }
+                TextButton({ if (allowed) onRemove(uids); selected = emptySet(); confirmRemove = null }) { Text("Remove", color = ErrorRed) }
             },
             dismissButton = { TextButton({ confirmRemove = null }) { Text("Cancel") } }
         )
@@ -711,7 +1081,7 @@ fun EventDetailScreen(
         onDismissRequest = { confirmEnd = false },
         title = { Text("End this event?") },
         text = { Text("It moves to Past and becomes read-only. You can reopen it later.") },
-        confirmButton = { TextButton({ confirmEnd = false; onEnd() }) { Text("End event") } },
+        confirmButton = { TextButton({ confirmEnd = false; if (allowed) onEnd() }) { Text("End event") } },
         dismissButton = { TextButton({ confirmEnd = false }) { Text("Cancel") } }
     )
 }
@@ -735,24 +1105,36 @@ private fun DetailLine(label: String, value: String) = Row(Modifier.fillMaxWidth
 @Composable
 fun ScannerScreen(
     event: EventEntity?, mode: ScanMode, state: ScanState, nfcAvailable: Boolean, hasCamera: Boolean,
+    locationState: DeviceLocationState,
     unlockPromptOpen: Boolean, unlockStatus: UnlockStatus,
     hasDeviceLock: Boolean, hasAdminCards: Boolean,
-    leftAnchor: String?, rightAnchor: String?,
+    template: IdCardTemplateEntity?,
     onOcrCandidate: (String?) -> Unit, onCancelRegistration: () -> Unit,
     onRequestUnlock: () -> Unit, onCancelUnlock: () -> Unit, onTriggerDeviceUnlock: () -> Unit
 ) {
     if (event == null) { Box(Modifier.fillMaxSize()); return }
+    val geofenceStatus = TapRules.evaluateGeofence(event, locationState)
+    val allowed = geofenceStatus.isAllowed
+
     BackHandler { onRequestUnlock() }
 
     Box(Modifier.fillMaxSize()) {
-        when (state) {
-            is ScanState.Idle ->
-                if (nfcAvailable) IdleTapScreen(event.msgIdle)
-                else ResultScreen(false, "NFC is off or unavailable", "Enable NFC in Settings")
-            is ScanState.Result -> ResultScreen(state.result.ok, state.result.title, state.result.subtitle)
-            is ScanState.Registering -> RegistrationScreen(hasCamera, leftAnchor, rightAnchor, onOcrCandidate, onCancelRegistration)
+        if (!allowed) {
+            ResultScreen(
+                ok = false,
+                title = geofenceStatus.alertTitle,
+                subtitle = "Scanning is paused until this device returns inside the event bounds"
+            )
+        } else {
+            when (state) {
+                is ScanState.Idle ->
+                    if (nfcAvailable) IdleTapScreen(event.msgIdle)
+                    else ResultScreen(false, "NFC is off or unavailable", "Enable NFC in Settings")
+                is ScanState.Result -> ResultScreen(state.result.ok, state.result.title, state.result.subtitle)
+                is ScanState.Registering -> RegistrationScreen(hasCamera, template, onOcrCandidate, onCancelRegistration)
+            }
         }
-        if (state is ScanState.Idle) {
+        if (state is ScanState.Idle || !allowed) {
             Row(
                 Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 16.dp)
                     .clip(CircleShape).background(Color.White).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -763,6 +1145,15 @@ fun ScannerScreen(
                     color = Ink, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp
                 )
                 Text("  ·  ${event.title}", color = Muted, fontSize = 14.sp, maxLines = 1)
+                if (event.locationLockEnabled) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = "Location Locked",
+                        tint = if (allowed) Ink else ErrorRed,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
             }
         }
     }

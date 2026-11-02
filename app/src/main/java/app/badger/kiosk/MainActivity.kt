@@ -1,15 +1,25 @@
 package app.badger.kiosk
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.KeyguardManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.net.Uri
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.provider.Settings
+import androidx.core.location.LocationManagerCompat
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -43,6 +53,11 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         uri ?: return@registerForActivityResult
         lifecycleScope.launch {
             val xlsx = vm.buildXlsx(exportEventId)
+            if (xlsx.isEmpty()) {
+                runCatching { android.provider.DocumentsContract.deleteDocument(contentResolver, uri) }
+                android.widget.Toast.makeText(this@MainActivity, "Export blocked: outside event bounds", android.widget.Toast.LENGTH_LONG).show()
+                return@launch
+            }
             contentResolver.openOutputStream(uri)?.use { it.write(xlsx) }
             android.widget.Toast.makeText(this@MainActivity, "Exported Excel file", android.widget.Toast.LENGTH_SHORT).show()
         }
@@ -61,6 +76,95 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
     private fun isDeviceSecure(): Boolean {
         val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         return km?.isDeviceSecure == true
+    }
+
+    // ---- location (geofence) tracking via platform LocationManager (no Play Services) ----
+    private var lastLocation: Location? = null
+
+    private val locationPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        startLocationUpdates()
+        publishLocation()
+    }
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            val prev = lastLocation
+            // Prefer the freshest fix; keep a mock fix flagged until a genuine one arrives.
+            if (prev == null || location.time >= prev.time || isMock(location)) lastLocation = location
+            publishLocation()
+        }
+        override fun onProviderEnabled(provider: String) = publishLocation()
+        override fun onProviderDisabled(provider: String) = publishLocation()
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+    }
+
+    private val locationModeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) = publishLocation()
+    }
+
+    private fun hasLocationPermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private fun isMock(l: Location): Boolean =
+        if (Build.VERSION.SDK_INT >= 31) l.isMock else @Suppress("DEPRECATION") l.isFromMockProvider
+
+    private fun requestLocationPermission() {
+        locationPermLauncher.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        )
+    }
+
+    private fun openLocationSettings() {
+        runCatching { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+    }
+
+    /** Opens turn-by-turn navigation to the event's geofence centre: Google Maps, then any maps app, then browser. */
+    private fun navigateToEvent(event: EventEntity) {
+        val lat = event.latitude ?: return
+        val lon = event.longitude ?: return
+        val attempts = listOf(
+            Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$lat,$lon")).setPackage("com.google.android.apps.maps"),
+            Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lon?q=$lat,$lon")),
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/dir/?api=1&destination=$lat,$lon&travelmode=driving"))
+        )
+        val launched = attempts.any { runCatching { startActivity(it) }.isSuccess }
+        if (!launched) android.widget.Toast.makeText(this, "No maps app available", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startLocationUpdates() {
+        if (!hasLocationPermission()) return
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        runCatching { lm.removeUpdates(locationListener) }
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { p ->
+            if (runCatching { lm.isProviderEnabled(p) }.getOrDefault(false)) {
+                runCatching { lm.requestLocationUpdates(p, 2000L, 0f, locationListener, Looper.getMainLooper()) }
+                runCatching { lm.getLastKnownLocation(p) }.getOrNull()?.let {
+                    val prev = lastLocation
+                    if (prev == null || it.time > prev.time) lastLocation = it
+                }
+            }
+        }
+        publishLocation()
+    }
+
+    private fun publishLocation() {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        val enabled = lm?.let { LocationManagerCompat.isLocationEnabled(it) } == true
+        val perm = hasLocationPermission()
+        val loc = if (perm && enabled) lastLocation else null
+        vm.updateLocationState(
+            DeviceLocationState(
+                hasPermission = perm,
+                isLocationEnabled = enabled,
+                latitude = loc?.latitude,
+                longitude = loc?.longitude,
+                isMock = loc?.let(::isMock) == true
+            )
+        )
     }
 
     @Suppress("DEPRECATION")
@@ -99,6 +203,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 val unlockPromptOpen by vm.unlockPromptOpen.collectAsStateWithLifecycle()
                 val unlockStatus by vm.unlockStatus.collectAsStateWithLifecycle()
                 val enrollingAdminCard by vm.enrollingAdminCard.collectAsStateWithLifecycle()
+                val locationState by vm.locationState.collectAsStateWithLifecycle()
 
                 var missingLockDialogMessage by remember { mutableStateOf<String?>(null) }
                 val hasAdminCards = remember(employees, adminCards) {
@@ -122,6 +227,10 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         adminCards = adminCards,
                         templates = templates,
                         enrollingAdminCard = enrollingAdminCard,
+                        locationState = locationState,
+                        onRequestLocationPermission = ::requestLocationPermission,
+                        onOpenLocationSettings = ::openLocationSettings,
+                        onNavigateToEvent = ::navigateToEvent,
                         nfcAvailable = nfcAdapter?.isEnabled == true,
                         onOpen = { vm.go(Route.Detail(it)) },
                         onCreate = { vm.go(Route.Create) },
@@ -178,6 +287,10 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         BackHandler { vm.go(Route.Home) }
                         CreateEventScreen(
                             templates = templates,
+                            locationState = locationState,
+                            onRequestLocationPermission = ::requestLocationPermission,
+                            onOpenLocationSettings = ::openLocationSettings,
+                            onRefreshLocation = { startLocationUpdates(); publishLocation() },
                             onBack = { vm.go(Route.Home) },
                             onCreateTemplate = { vm.go(Route.CreateTemplate) },
                             onCreate = vm::createEvent
@@ -188,8 +301,8 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         CreateTemplateScreen(
                             hasCamera = hasCamera,
                             onBack = { vm.go(Route.Home) },
-                            onSaveTemplate = { name, leftAnchor, rightAnchor ->
-                                vm.createTemplate(name, leftAnchor, rightAnchor)
+                            onSaveTemplate = { name, leftAnchor, rightAnchor, isPortrait, relYMin, relYMax ->
+                                vm.createTemplate(name, leftAnchor, rightAnchor, isPortrait, relYMin, relYMax)
                             }
                         )
                     }
@@ -199,6 +312,9 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         val rows by remember(r.eventId) { vm.attendance(r.eventId) }.collectAsStateWithLifecycle(emptyList())
                         EventDetailScreen(
                             event, rows,
+                            locationState = locationState,
+                            onRequestLocationPermission = ::requestLocationPermission,
+                            onOpenLocationSettings = ::openLocationSettings,
                             onBack = { vm.go(Route.Home) },
                             onScan = { mode ->
                                 val tplId = event?.templateId
@@ -223,11 +339,11 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         }
                         ScannerScreen(
                             event, r.mode, scan,
+                            locationState = locationState,
                             nfcAvailable = nfcAdapter?.isEnabled == true, hasCamera = hasCamera,
                             unlockPromptOpen = unlockPromptOpen, unlockStatus = unlockStatus,
                             hasDeviceLock = isDeviceSecure(), hasAdminCards = hasAdminCards,
-                            leftAnchor = eventTemplate?.leftAnchor,
-                            rightAnchor = eventTemplate?.rightAnchor,
+                            template = eventTemplate,
                             onOcrCandidate = vm::onOcrCandidate,
                             onCancelRegistration = vm::cancelRegistration,
                             onRequestUnlock = vm::openUnlockPrompt,
@@ -274,11 +390,19 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                 NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS,
             null
         )
+        ContextCompat.registerReceiver(
+            this, locationModeReceiver, IntentFilter(LocationManager.MODE_CHANGED_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        startLocationUpdates()
+        publishLocation()
     }
 
     override fun onPause() {
         super.onPause()
         nfcAdapter?.disableReaderMode(this)
+        runCatching { unregisterReceiver(locationModeReceiver) }
+        runCatching { (getSystemService(Context.LOCATION_SERVICE) as? LocationManager)?.removeUpdates(locationListener) }
     }
 
     /** Runs on a binder thread. Tags are only acted on while a scanner is open. */
