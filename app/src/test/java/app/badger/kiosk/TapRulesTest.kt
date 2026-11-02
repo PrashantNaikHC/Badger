@@ -147,7 +147,50 @@ class TapRulesTest {
         val lines4 = listOf("Company XYZ", "Name: Sarah Connor Date: 2026")
         assertEquals("Sarah Connor", NameExtractor.extract(lines4, leftAnchor = "Name", rightAnchor = "Date"))
 
-        // Neither anchor specified
-        assertNull(NameExtractor.extract(lines1, null, null))
+        // Neither anchor specified without fallback
+        assertNull(NameExtractor.extract(lines1, null, null, allowFallback = false))
+
+        // Neither anchor specified WITH fallback to smart heuristics
+        assertEquals("Govind Sharma", NameExtractor.extract(lines1, null, null, allowFallback = true))
+    }
+
+    @Test fun smartNameDetectorExtractsRealWorldBadge() {
+        // User's exact prompt scenario: "GOOGLE | Govinda | Rathod | G45098 | Bangalore"
+        val lines = listOf(
+            "GOOGLE",
+            "Govinda",
+            "Rathod",
+            "G45098",
+            "Bangalore"
+        )
+        val extracted = SmartNameDetector.extractNameFallback(lines)
+        assertEquals("Govinda Rathod", extracted)
+    }
+
+    @Test fun nameExtractorFuzzyAnchorMatching() {
+        // OCR character substitution: "G00GLE" instead of "GOOGLE"
+        val linesWithOcrNoise = listOf(
+            "G00GLE",
+            "Govinda",
+            "Rathod",
+            "G45098",
+            "Bangalore"
+        )
+        // With leftAnchor = "GOOGLE" (1 edit distance from G00GLE), fuzzy anchor matching succeeds
+        val result = NameExtractor.extract(linesWithOcrNoise, leftAnchor = "GOOGLE", rightAnchor = "G45098")
+        assertEquals("Govinda Rathod", result)
+    }
+
+    @Test fun nameExtractorSmartFallbackWhenAnchorMissing() {
+        val lines = listOf(
+            "Acme Technologies",
+            "Sarah Connor",
+            "EMP 99120",
+            "California"
+        )
+        // Anchor "NON_EXISTENT" is missing, but allowFallback = true should salvage the name
+        val result = NameExtractor.extract(lines, leftAnchor = "NON_EXISTENT", rightAnchor = null, allowFallback = true)
+        assertEquals("Sarah Connor", result)
     }
 }
+
