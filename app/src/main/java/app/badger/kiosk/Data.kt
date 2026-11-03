@@ -57,7 +57,9 @@ data class EventEntity(
     val locationLockEnabled: Boolean = false,
     val latitude: Double? = null,
     val longitude: Double? = null,
-    val radiusMeters: Float? = null
+    val radiusMeters: Float? = null,
+    // Send each successful scan to a connected Bluetooth host as keyboard (HID) input
+    val hidEnabled: Boolean = false
 ) {
     val hasExit get() = type == EventType.ENTRY_EXIT
 }
@@ -190,7 +192,7 @@ interface AppDao {
         AdminCardEntity::class,
         IdCardTemplateEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -207,11 +209,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE events ADD COLUMN hidEnabled INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile private var instance: AppDatabase? = null
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext, AppDatabase::class.java, "badger.db"
-            ).addMigrations(MIGRATION_5_6)
+            ).addMigrations(MIGRATION_5_6, MIGRATION_6_7)
                 .fallbackToDestructiveMigration()
                 .build().also { instance = it }
         }

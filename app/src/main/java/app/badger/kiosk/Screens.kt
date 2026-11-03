@@ -501,6 +501,7 @@ fun CreateEventScreen(
     var templateDropdownExpanded by remember { mutableStateOf(false) }
     var entryExit by rememberSaveable { mutableStateOf(EventTemplate.GIFT.entryExit) }
     var locationLockEnabled by rememberSaveable { mutableStateOf(false) }
+    var hidEnabled by rememberSaveable { mutableStateOf(false) }
     var selectedRadius by rememberSaveable { mutableFloatStateOf(TapRules.DEFAULT_GEOFENCE_RADIUS_M) }
     var capturedLat by rememberSaveable { mutableStateOf<Double?>(null) }
     var capturedLon by rememberSaveable { mutableStateOf<Double?>(null) }
@@ -575,7 +576,8 @@ fun CreateEventScreen(
                                 locationLockEnabled = locationLockEnabled,
                                 latitude = if (locationLockEnabled) capturedLat else null,
                                 longitude = if (locationLockEnabled) capturedLon else null,
-                                radiusMeters = if (locationLockEnabled) selectedRadius else null
+                                radiusMeters = if (locationLockEnabled) selectedRadius else null,
+                                hidEnabled = hidEnabled
                             )
                         )
                     },
@@ -661,6 +663,20 @@ fun CreateEventScreen(
                     Text("Has entry & exit", fontWeight = FontWeight.Medium)
                     Text(
                         if (entryExit) "People tap in and tap out" else "One-time check-in only",
+                        color = Muted, fontSize = 12.sp
+                    )
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { hidEnabled = !hidEnabled },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(hidEnabled, { hidEnabled = it })
+                Column {
+                    Text("Send scans as Bluetooth keyboard (HID)", fontWeight = FontWeight.Medium)
+                    Text(
+                        "Each successful scan is typed as a row into the connected PC (e.g. Excel)",
                         color = Muted, fontSize = 12.sp
                     )
                 }
@@ -831,6 +847,7 @@ fun EventDetailScreen(
     onRequestLocationPermission: () -> Unit,
     onOpenLocationSettings: () -> Unit,
     onBack: () -> Unit, onScan: (ScanMode) -> Unit, onExport: () -> Unit,
+    onResendHid: () -> Unit = {},
     onEnd: () -> Unit, onReopen: () -> Unit, onRemove: (Set<String>) -> Unit
 ) {
     if (event == null) { Box(Modifier.fillMaxSize()) ; return }
@@ -1013,6 +1030,7 @@ fun EventDetailScreen(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     SectionLabel("Entries (${rows.size})")
                     Spacer(Modifier.weight(1f))
+                    if (event.hidEnabled) TextButton(onClick = onResendHid, enabled = allowed) { Text("Resend to PC") }
                     TextButton(onClick = onExport, enabled = allowed) { Text("Export Excel") }
                 }
             }

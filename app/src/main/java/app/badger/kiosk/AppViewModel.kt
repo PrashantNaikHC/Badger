@@ -2,6 +2,9 @@ package app.badger.kiosk
 
 import android.app.Application
 import android.content.Context
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.VibrationEffect
@@ -29,6 +32,9 @@ sealed interface ScanState {
 
 enum class UnlockStatus { IDLE, REJECTED }
 
+/** Last HID delivery result shown on the scanner screen. */
+data class HidUiStatus(val text: String = "", val ok: Boolean? = null, val sent: Int = 0, val total: Int = 0)
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val dao = AppDatabase.get(app).dao()
     private val prefs = app.getSharedPreferences("badger_prefs", Context.MODE_PRIVATE)
@@ -48,6 +54,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _enrollingAdminCard = MutableStateFlow(false)
     val enrollingAdminCard: StateFlow<Boolean> = _enrollingAdminCard
+
+    private val hidMutex = Mutex()
+    private val _hidStatus = MutableStateFlow(HidUiStatus())
+    val hidStatus: StateFlow<HidUiStatus> = _hidStatus
 
     private val _locationState = MutableStateFlow(DeviceLocationState())
     val locationState: StateFlow<DeviceLocationState> = _locationState
@@ -196,6 +206,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val ev = dao.getEvent(id) ?: return@launch
         if (!isEventAllowed(ev)) return@launch
         dao.setStatus(id, EventStatus.ENDED, System.currentTimeMillis())
+        if (ev.hidEnabled) hidMutex.withLock {
+            val total = hidRows(id).size
+            val ok = HidSender.state.value.connected && HidSender.type("TOTAL\t$total\n")
+            _hidStatus.value = _hidStatus.value.copy(
+                text = if (ok) "Total row ($total) sent ✓" else "Total row NOT sent", ok = ok
+            )
+        }
     }
 
     fun reopenEvent(id: Long) = viewModelScope.launch {
@@ -270,7 +287,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         scheduleReset(REGISTRATION_TIMEOUT_MS)
                     }
                     is TapOutcome.Show -> {
-                        outcome.write?.let { dao.upsertAttendance(it) }
+                        outcome.write?.let {
+                            dao.upsertAttendance(it)
+                            val name = dao.findEmployee(uid)?.name
+                            if (name != null) emitHid(event, name, r.mode, it.checkOutAt ?: it.checkInAt)
+                        }
                         show(outcome.result)
                     }
                 }
@@ -294,11 +315,79 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 dao.upsertEmployee(emp)
                 if (wasStandaloneAdmin) dao.deleteAdminCard(s.uid)
                 val outcome = TapRules.checkIn(event, emp, dao.findAttendance(event.id, s.uid), System.currentTimeMillis()) as TapOutcome.Show
-                outcome.write?.let { dao.upsertAttendance(it) }
+                outcome.write?.let {
+                    dao.upsertAttendance(it)
+                    emitHid(event, emp.name, r.mode, it.checkOutAt ?: it.checkInAt)
+                }
                 show(outcome.result)
             }
         }
     }
+
+    // ---- HID keyboard output ----
+    private fun hidRows(eventId: Long): List<String> =
+        prefs.getString("hid_rows_$eventId", "")!!.split("\n").filter { it.isNotEmpty() }
+
+    private fun hidSentSet(eventId: Long): MutableSet<String> =
+        prefs.getString("hid_ok_$eventId", "")!!.split(",").filter { it.isNotEmpty() }.toMutableSet()
+
+    /** One spreadsheet cell: no tabs/newlines, and formula-leading chars neutralised. */
+    private fun hidCell(v: String): String {
+        val t = v.replace(Regex("[\\t\\r\\n]+"), " ").trim()
+        return if (t.firstOrNull() in listOf('=', '+', '-', '@')) "'$t" else t
+    }
+
+    /** Stores the row (so it can be resent later) and types it on the connected host. */
+    private fun emitHid(event: EventEntity, name: String, mode: ScanMode, ts: Long) {
+        if (!event.hidEnabled) return
+        viewModelScope.launch {
+            hidMutex.withLock {
+                val rows = hidRows(event.id)
+                val n = rows.size + 1
+                val time = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.US).format(Date(ts))
+                val cells = mutableListOf(n.toString(), hidCell(name), time)
+                if (event.hasExit) cells += if (mode == ScanMode.EXIT) "Exit" else "Entry"
+                val line = cells.joinToString("\t")
+                prefs.edit().putString("hid_rows_${event.id}", (rows + line).joinToString("\n")).apply()
+                typeHidLine(event.id, n, line)
+            }
+        }
+    }
+
+    private suspend fun typeHidLine(eventId: Long, n: Int, line: String): Boolean {
+        val connected = HidSender.state.value.connected
+        val ok = connected && HidSender.type(line + "\n")
+        val set = hidSentSet(eventId)
+        if (ok) {
+            set.add(n.toString())
+            prefs.edit().putString("hid_ok_$eventId", set.joinToString(",")).apply()
+        }
+        _hidStatus.value = HidUiStatus(
+            text = when {
+                ok -> "Row $n sent ✓"
+                !connected -> "Row $n NOT sent: not connected"
+                else -> "Row $n send failed ✗"
+            },
+            ok = ok, sent = set.size, total = hidRows(eventId).size
+        )
+        return ok
+    }
+
+    /** Re-types stored rows from [from] to the end. Returns a message for the user. */
+    suspend fun resendHid(eventId: Long, from: Int): String = hidMutex.withLock {
+        val rows = hidRows(eventId)
+        if (rows.isEmpty()) return@withLock "No rows to resend"
+        if (!HidSender.state.value.connected) return@withLock "Not connected to a PC"
+        val start = from.coerceAtLeast(1)
+        if (start > rows.size) return@withLock "Row $start doesn't exist (last is ${rows.size})"
+        var sent = 0
+        for (i in start..rows.size) {
+            if (typeHidLine(eventId, i, rows[i - 1])) sent++ else return@withLock "Stopped at row $i: send failed"
+        }
+        "Resent $sent row(s)"
+    }
+
+    fun hidRowCount(eventId: Long): Int = hidRows(eventId).size
 
     fun cancelRegistration() { resetNow() }
 

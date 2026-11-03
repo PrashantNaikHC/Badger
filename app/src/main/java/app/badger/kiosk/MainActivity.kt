@@ -27,6 +27,24 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +79,21 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
             contentResolver.openOutputStream(uri)?.use { it.write(xlsx) }
             android.widget.Toast.makeText(this@MainActivity, "Exported Excel file", android.widget.Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private var hidPicker by mutableStateOf(false)
+    private var resendEventId by mutableStateOf<Long?>(null)
+
+    private val hidPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) HidSender.start(this) }
+
+    /** Registers the phone as a Bluetooth keyboard (asks for the Bluetooth permission if needed). */
+    private fun ensureHid() {
+        if (Build.VERSION.SDK_INT >= 31 &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) hidPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        else HidSender.start(this)
     }
 
     private val authLauncher = registerForActivityResult(
@@ -327,6 +360,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                                 }
                             },
                             onExport = { event?.let(::export) },
+                            onResendHid = { resendEventId = r.eventId; ensureHid() },
                             onEnd = { vm.endEvent(r.eventId) },
                             onReopen = { vm.reopenEvent(r.eventId) },
                             onRemove = { vm.removeEntries(r.eventId, it) }
@@ -337,6 +371,7 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                         val eventTemplate = remember(event, templates) {
                             templates.find { it.id == event?.templateId } ?: templates.firstOrNull()
                         }
+                        Box(Modifier.fillMaxSize()) {
                         ScannerScreen(
                             event, r.mode, scan,
                             locationState = locationState,
@@ -357,7 +392,99 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
                                 )
                             }
                         )
+                        if (event?.hidEnabled == true) {
+                            val hs by HidSender.state.collectAsStateWithLifecycle()
+                            val st by vm.hidStatus.collectAsStateWithLifecycle()
+                            LaunchedEffect(Unit) { ensureHid() }
+                            Surface(
+                                Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                                shape = RoundedCornerShape(12.dp), tonalElevation = 6.dp, shadowElevation = 4.dp
+                            ) {
+                                Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.padding(end = 8.dp)) {
+                                        Text(
+                                            when {
+                                                !hs.supported -> "Keyboard (HID) not supported on this phone"
+                                                hs.connected -> "Keyboard: ${hs.connectedName}"
+                                                else -> "Keyboard: not connected"
+                                            }, fontSize = 12.sp
+                                        )
+                                        if (st.text.isNotEmpty()) Text(
+                                            "${st.text} · ${st.sent}/${st.total} rows delivered", fontSize = 11.sp,
+                                            color = if (st.ok == false) Color(0xFFB3261E) else Color.Unspecified
+                                        )
+                                    }
+                                    TextButton({ ensureHid(); hidPicker = true }) { Text(if (hs.connected) "Change" else "Connect") }
+                                }
+                            }
+                        }
+                        }
                     }
+                }
+
+                if (hidPicker) {
+                    val hs by HidSender.state.collectAsStateWithLifecycle()
+                    val devices = remember(hidPicker, hs) { HidSender.pairedDevices(this@MainActivity) }
+                    AlertDialog(
+                        onDismissRequest = { hidPicker = false },
+                        title = { Text("Connect to a PC") },
+                        text = {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Text("Pair the phone with the computer in Bluetooth settings, then pick it here (or connect from the computer side).", fontSize = 13.sp)
+                                Spacer(Modifier.height(8.dp))
+                                if (devices.isEmpty()) {
+                                    Text("No paired devices found.", fontSize = 13.sp, color = Color.Gray)
+                                }
+                                devices.forEach { d ->
+                                    TextButton(
+                                        onClick = {
+                                            HidSender.connect(d)
+                                            hidPicker = false
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(HidSender.deviceName(d), modifier = Modifier.fillMaxWidth())
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton({
+                                hidPicker = false
+                                runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                            }) { Text("Bluetooth settings") }
+                        },
+                        dismissButton = { TextButton({ hidPicker = false }) { Text("Close") } }
+                    )
+                }
+
+                resendEventId?.let { evId ->
+                    var from by remember { mutableStateOf("1") }
+                    AlertDialog(
+                        onDismissRequest = { resendEventId = null },
+                        title = { Text("Resend rows to PC") },
+                        text = {
+                            Column {
+                                Text("Rows saved: ${vm.hidRowCount(evId)}. Put the cursor in the first empty cell in Excel, then choose the row number to resend from.", fontSize = 13.sp)
+                                OutlinedTextField(
+                                    from, { from = it.filter(Char::isDigit).take(6) },
+                                    label = { Text("From row #") }, singleLine = true
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton({
+                                val n = from.toIntOrNull() ?: 1
+                                resendEventId = null
+                                lifecycleScope.launch { toast(vm.resendHid(evId, n)) }
+                            }) { Text("Resend") }
+                        },
+                        dismissButton = { TextButton({ resendEventId = null }) { Text("Cancel") } }
+                    )
                 }
 
                 missingLockDialogMessage?.let { msg ->
@@ -396,6 +523,14 @@ class MainActivity : ComponentActivity(), NfcAdapter.ReaderCallback {
         )
         startLocationUpdates()
         publishLocation()
+    }
+
+    private fun toast(msg: String) =
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) HidSender.stop(this)
     }
 
     override fun onPause() {
